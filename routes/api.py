@@ -3,17 +3,17 @@ import sys
 from flask import Blueprint, request, jsonify
 from functools import wraps
 from database import get_db, now_jst, today_jst
-from config import ADMIN_SECRET
+from config import ADMIN_SECRET, WAITLIST_PRIORITY_HOURS
 
 # stderr → Passenger captures this in the application error log
 # stdout (print) is NOT captured — always use logger or sys.stderr here
-logging.basicConfig(
-    stream=sys.stderr,
-    level=logging.DEBUG,
-    format='%(asctime)s [%(levelname)s] %(name)s: %(message)s',
-)
-logger = logging.getLogger('toyonaka.api')
-logger.debug('api blueprint loaded, ADMIN_SECRET repr=%r', ADMIN_SECRET)
+# logging.basicConfig(
+#     stream=sys.stderr,
+#     level=logging.DEBUG,
+#     format='%(asctime)s [%(levelname)s] %(name)s: %(message)s',
+# )
+# logger = logging.getLogger('toyonaka.api')
+print(f'api blueprint loaded, ADMIN_SECRET repr={ADMIN_SECRET}')
 
 api_bp = Blueprint('api', __name__, url_prefix='/api')
 
@@ -24,8 +24,7 @@ def require_admin(f):
     @wraps(f)
     def decorated(*args, **kwargs):
         secret = request.headers.get('X-Admin-Secret', '')
-        logger.debug('require_admin: received=%r  expected=%r  match=%s',
-                     secret, ADMIN_SECRET, secret == ADMIN_SECRET)
+        print(f'require_admin: received={secret}  expected={ADMIN_SECRET}')
         if secret != ADMIN_SECRET:
             return jsonify({'error': 'Unauthorized'}), 401
         return f(*args, **kwargs)
@@ -44,8 +43,8 @@ def admin_ping():
 # ─── Helpers ──────────────────────────────────────────────────────────────────
 
 def _session_to_dict(row, line_user_id=None):
-    """Convert a sessions DB row (with total_players) to a dict.
-    Optionally includes my_registration for the given line_user_id."""
+    """Convert a sessions DB row (with total_players / waiting_count) to a dict.
+    Optionally includes my_registration (with waiting_position) for the given line_user_id."""
     d = dict(row)
     if line_user_id:
         conn = get_db()
@@ -53,8 +52,20 @@ def _session_to_dict(row, line_user_id=None):
             'SELECT * FROM attendees WHERE session_id = ? AND line_user_id = ?',
             (d['id'], line_user_id),
         ).fetchone()
+        if reg:
+            reg_dict = dict(reg)
+            if reg_dict.get('status') == 'waiting':
+                # Calculate position in waiting list (1-based, ordered by registered_at)
+                pos = conn.execute(
+                    '''SELECT COUNT(*) FROM attendees
+                       WHERE session_id = ? AND status = ? AND registered_at <= ?''',
+                    (d['id'], 'waiting', reg_dict['registered_at']),
+                ).fetchone()[0]
+                reg_dict['waiting_position'] = pos
+            d['my_registration'] = reg_dict
+        else:
+            d['my_registration'] = None
         conn.close()
-        d['my_registration'] = dict(reg) if reg else None
     return d
 
 
@@ -73,7 +84,9 @@ def list_sessions():
     line_user_id  = request.args.get('line_user_id')
 
     query = '''
-        SELECT s.*, COALESCE(SUM(a.player_count), 0) AS total_players
+        SELECT s.*,
+               COALESCE(SUM(CASE WHEN a.status = 'confirmed' THEN a.player_count ELSE 0 END), 0) AS total_players,
+               COALESCE(SUM(CASE WHEN a.status = 'waiting'   THEN 1            ELSE 0 END), 0) AS waiting_count
         FROM sessions s
         LEFT JOIN attendees a ON a.session_id = s.id
     '''
@@ -100,7 +113,9 @@ def list_sessions():
 def get_session(session_id):
     conn = get_db()
     row = conn.execute('''
-        SELECT s.*, COALESCE(SUM(a.player_count), 0) AS total_players
+        SELECT s.*,
+               COALESCE(SUM(CASE WHEN a.status = 'confirmed' THEN a.player_count ELSE 0 END), 0) AS total_players,
+               COALESCE(SUM(CASE WHEN a.status = 'waiting'   THEN 1            ELSE 0 END), 0) AS waiting_count
         FROM sessions s
         LEFT JOIN attendees a ON a.session_id = s.id
         WHERE s.id = ?
@@ -170,6 +185,7 @@ def update_session(session_id):
         session_id,
     ))
     conn.commit()
+    _rebalance_session(session_id, conn)
     conn.close()
     return jsonify({'message': 'Session updated'})
 
@@ -194,8 +210,105 @@ def toggle_session(session_id):
         (session_id,),
     )
     conn.commit()
+    new_state = conn.execute('SELECT is_open FROM sessions WHERE id = ?', (session_id,)).fetchone()
+    if new_state and new_state['is_open']:
+        _rebalance_session(session_id, conn)
     conn.close()
     return jsonify({'message': 'Toggled'})
+
+
+# ─── Waitlist promotion ───────────────────────────────────────────────────────
+
+def _promote_from_waitlist(session_id, conn):
+    """Scan the waiting list in FIFO order after a confirmed slot is freed.
+    - If a waiter fits in the remaining slots: promote to confirmed, keep scanning.
+    - If a waiter doesn't fit AND has been waiting > WAITLIST_PRIORITY_HOURS: hard stop.
+    - If a waiter doesn't fit AND is still fresh: skip them, continue scanning.
+    """
+    from datetime import datetime, timezone, timedelta
+    now = datetime.now(timezone(timedelta(hours=9)))
+    cutoff_delta = timedelta(hours=WAITLIST_PRIORITY_HOURS)
+
+    session = conn.execute('SELECT * FROM sessions WHERE id = ?', (session_id,)).fetchone()
+    if not session:
+        return
+
+    waiters = conn.execute(
+        "SELECT * FROM attendees WHERE session_id = ? AND status = 'waiting' ORDER BY registered_at ASC",
+        (session_id,),
+    ).fetchall()
+
+    if not waiters:
+        return
+
+    for waiter in waiters:
+        free_slots = session['max_players'] - conn.execute(
+            "SELECT COALESCE(SUM(player_count), 0) FROM attendees WHERE session_id = ? AND status = 'confirmed'",
+            (session_id,),
+        ).fetchone()[0]
+
+        if free_slots <= 0:
+            break
+
+        if waiter['player_count'] <= free_slots:
+            conn.execute(
+                "UPDATE attendees SET status = 'confirmed' WHERE id = ?",
+                (waiter['id'],),
+            )
+            conn.commit()
+            print(f"Promoted attendee {waiter['id']} from waiting to confirmed for session {session_id}")
+        else:
+            # Waiter doesn't fit — check if they've been waiting long enough to block
+            try:
+                registered_at = datetime.fromisoformat(waiter['registered_at'])
+                if registered_at.tzinfo is None:
+                    registered_at = registered_at.replace(tzinfo=timezone(timedelta(hours=9)))
+            except (ValueError, TypeError):
+                registered_at = now  # fallback: treat as fresh
+
+            waited = now - registered_at
+            if waited >= cutoff_delta:
+                print(
+                    f"Waiter {waiter['id']} has been waiting {waited.total_seconds() / 3600:.2f} (>= {WAITLIST_PRIORITY_HOURS}h threshold) — blocking further promotions"
+                )
+                break  # Hard stop: stale group has priority, nobody behind them gets promoted
+            # else: fresh group, skip and continue scanning
+
+
+def _rebalance_session(session_id, conn):
+    """Rebalance confirmed/waiting lists after max_players changes or a session is re-opened.
+    - If confirmed total > max_players: demote the most-recently-registered confirmed attendees
+      to waiting until the total fits.
+    - Then promote from the waiting list to fill any newly available slots.
+    """
+    session = conn.execute('SELECT * FROM sessions WHERE id = ?', (session_id,)).fetchone()
+    if not session:
+        return
+
+    max_players = session['max_players']
+
+    # Step 1: Demote excess confirmed attendees (most recently registered first)
+    confirmed = conn.execute(
+        "SELECT * FROM attendees WHERE session_id = ? AND status = 'confirmed' ORDER BY registered_at DESC",
+        (session_id,),
+    ).fetchall()
+
+    confirmed_total = sum(a['player_count'] for a in confirmed)
+
+    for attendee in confirmed:
+        if confirmed_total <= max_players:
+            break
+        conn.execute(
+            "UPDATE attendees SET status = 'waiting' WHERE id = ?",
+            (attendee['id'],),
+        )
+        confirmed_total -= attendee['player_count']
+        print(f"Demoted attendee {attendee['id']} from confirmed to waiting for session {session_id}")
+
+    conn.commit()
+
+    # Step 2: Promote from waiting list to fill remaining free slots
+    _promote_from_waitlist(session_id, conn)
 
 
 # ─── Attendees ────────────────────────────────────────────────────────────────
@@ -203,12 +316,19 @@ def toggle_session(session_id):
 @api_bp.route('/sessions/<int:session_id>/attendees', methods=['GET'])
 def list_attendees(session_id):
     conn = get_db()
-    rows = conn.execute(
-        'SELECT * FROM attendees WHERE session_id = ? ORDER BY registered_at ASC',
+    confirmed = conn.execute(
+        "SELECT * FROM attendees WHERE session_id = ? AND status = 'confirmed' ORDER BY registered_at ASC",
+        (session_id,),
+    ).fetchall()
+    waiting = conn.execute(
+        "SELECT * FROM attendees WHERE session_id = ? AND status = 'waiting' ORDER BY registered_at ASC",
         (session_id,),
     ).fetchall()
     conn.close()
-    return jsonify([dict(r) for r in rows])
+    return jsonify({
+        'confirmed': [dict(r) for r in confirmed],
+        'waiting':   [dict(r) for r in waiting],
+    })
 
 
 @api_bp.route('/sessions/<int:session_id>/register', methods=['POST'])
@@ -240,17 +360,37 @@ def register(session_id):
         return jsonify({'error': 'Already registered'}), 409
 
     player_count = data.get('player_count', 1)
-    total = conn.execute(
-        'SELECT COALESCE(SUM(player_count), 0) AS total FROM attendees WHERE session_id = ?',
+    confirmed_total = conn.execute(
+        "SELECT COALESCE(SUM(player_count), 0) AS total FROM attendees WHERE session_id = ? AND status = 'confirmed'",
         (session_id,),
     ).fetchone()['total']
-    if total + player_count > session['max_players']:
+
+    if confirmed_total + player_count > session['max_players']:
+        # Not enough confirmed slots — add to waiting list
+        reg_time = now_jst()
+        conn.execute('''
+            INSERT INTO attendees (session_id, line_user_id, display_name, player_count, note, registered_at, status)
+            VALUES (?, ?, ?, ?, ?, ?, 'waiting')
+        ''', (
+            session_id,
+            line_user_id,
+            data.get('display_name'),
+            player_count,
+            data.get('note'),
+            reg_time,
+        ))
+        conn.commit()
+        # Calculate waiting position
+        position = conn.execute(
+            "SELECT COUNT(*) FROM attendees WHERE session_id = ? AND status = 'waiting'",
+            (session_id,),
+        ).fetchone()[0]
         conn.close()
-        return jsonify({'error': 'Not enough spots remaining'}), 400
+        return jsonify({'message': 'Added to waiting list', 'status': 'waiting', 'position': position}), 201
 
     conn.execute('''
-        INSERT INTO attendees (session_id, line_user_id, display_name, player_count, note, registered_at)
-        VALUES (?, ?, ?, ?, ?, ?)
+        INSERT INTO attendees (session_id, line_user_id, display_name, player_count, note, registered_at, status)
+        VALUES (?, ?, ?, ?, ?, ?, 'confirmed')
     ''', (
         session_id,
         line_user_id,
@@ -261,7 +401,7 @@ def register(session_id):
     ))
     conn.commit()
     conn.close()
-    return jsonify({'message': 'Registered successfully'}), 201
+    return jsonify({'message': 'Registered successfully', 'status': 'confirmed'}), 201
 
 
 @api_bp.route('/sessions/<int:session_id>/register', methods=['DELETE'])
@@ -273,13 +413,27 @@ def cancel_registration(session_id):
         return jsonify({'error': 'line_user_id is required'}), 400
 
     conn = get_db()
-    result = conn.execute(
+
+    # Check whether we're cancelling a confirmed or waiting registration
+    existing = conn.execute(
+        'SELECT status FROM attendees WHERE session_id = ? AND line_user_id = ?',
+        (session_id, line_user_id),
+    ).fetchone()
+    if not existing:
+        conn.close()
+        return jsonify({'error': 'Registration not found'}), 404
+
+    was_confirmed = existing['status'] == 'confirmed'
+
+    conn.execute(
         'DELETE FROM attendees WHERE session_id = ? AND line_user_id = ?',
         (session_id, line_user_id),
     )
     conn.commit()
-    conn.close()
 
-    if result.rowcount == 0:
-        return jsonify({'error': 'Registration not found'}), 404
+    # Only run promotion if a confirmed slot was freed
+    if was_confirmed:
+        _promote_from_waitlist(session_id, conn)
+
+    conn.close()
     return jsonify({'message': 'Registration cancelled'})

@@ -86,22 +86,29 @@
       }
       container.innerHTML = sessions.map(s => {
         const isFull       = s.total_players >= s.max_players;
-        const isRegistered = s.my_registration != null;
+        const reg          = s.my_registration;
+        const isConfirmed  = reg && reg.status === 'confirmed';
+        const isWaiting    = reg && reg.status === 'waiting';
         return `
           <div class="session-card open">
             <div class="session-header">
               <h2>${escHtml(s.title)}</h2>
               <div>
-                ${isFull       ? '<span class="badge badge-full">Full</span>'           : ''}
-                ${isRegistered ? '<span class="badge badge-registered">Registered</span>' : ''}
+                ${isFull      && !isConfirmed && !isWaiting ? '<span class="badge badge-full">Full</span>' : ''}
+                ${isConfirmed ? '<span class="badge badge-registered">Registered</span>' : ''}
+                ${isWaiting   ? `<span class="badge badge-waiting">Waitlist #${reg.waiting_position}</span>` : ''}
               </div>
             </div>
             <p>📍 ${escHtml(s.venue || '—')} &nbsp;|&nbsp; 📅 ${s.date} &nbsp;|&nbsp; ⏰ ${s.time_start}–${s.time_end}</p>
-            <p>👥 ${s.total_players} / ${s.max_players} players</p>
+            <p>👥 ${s.total_players} / ${s.max_players} confirmed${s.waiting_count > 0 ? ` &nbsp;|&nbsp; ⏳ ${s.waiting_count} waiting` : ''}</p>
             <div class="session-actions">
-              ${isRegistered
+              ${isConfirmed
                 ? `<button class="btn-danger" onclick="cancelRegistration(${s.id})">Cancel Registration</button>`
-                : `<button onclick="openRegisterModal(${s.id})" ${isFull ? 'disabled' : ''}>Register</button>`
+                : isWaiting
+                  ? `<button class="btn-danger" onclick="cancelRegistration(${s.id})">Leave Waiting List</button>`
+                  : isFull
+                    ? `<button class="btn-waiting" onclick="openRegisterModal(${s.id})">Join Waiting List</button>`
+                    : `<button onclick="openRegisterModal(${s.id})">Register</button>`
               }
             </div>
             <div class="attendees">
@@ -158,19 +165,42 @@
         return;
       }
       const res = await fetch(`${API_BASE}/sessions/${id}/attendees`);
-      const attendees = await res.json();
-      listEl.innerHTML = attendees.length === 0
-        ? '<p>No one registered yet.</p>'
+      const data = await res.json();
+      const confirmed = data.confirmed || [];
+      const waiting   = data.waiting   || [];
+
+      const confirmedHtml = confirmed.length === 0
+        ? '<p>No confirmed players yet.</p>'
         : `<table>
-             <thead><tr><th>Name</th><th>Count</th></tr></thead>
+             <thead><tr><th>Name</th><th>Count</th><th>Note</th></tr></thead>
              <tbody>
-               ${attendees.map(a => `
+               ${confirmed.map(a => `
                  <tr>
-                   <td>${escHtml(a.display_name || '—')}</td>
+                   <td>${escHtml(a.display_name || a.line_user_id)}</td>
                    <td>${a.player_count}</td>
+                   <td>${escHtml(a.note || '')}</td>
                  </tr>`).join('')}
              </tbody>
            </table>`;
+
+      const waitingHtml = waiting.length === 0
+        ? ''
+        : `<p class="waitlist-label">⏳ Waiting list</p>
+           <table>
+             <thead><tr><th>#</th><th>Name</th><th>Count</th><th>Note</th><th>Waiting since</th></tr></thead>
+             <tbody>
+               ${waiting.map((a, i) => `
+                 <tr>
+                   <td>${i + 1}</td>
+                   <td>${escHtml(a.display_name || a.line_user_id)}</td>
+                   <td>${a.player_count}</td>
+                   <td>${escHtml(a.note || '')}</td>
+                   <td>${a.registered_at ? a.registered_at.slice(0, 16).replace('T', ' ') : ''}</td>
+                 </tr>`).join('')}
+             </tbody>
+           </table>`;
+
+      listEl.innerHTML = confirmedHtml + waitingHtml;
       listEl.classList.remove('hidden');
       btn.textContent = '▼ Hide players';
     }

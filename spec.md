@@ -1,11 +1,17 @@
 # Badminton Attendance App - Project Spec
 
+## Update:
+
+This spec is not maintained after the project is finally live.
+
 ## Overview
+
 A LINE-integrated attendance booking app for a badminton circle. Admin manages sessions via LINE bot DM. Users register attendance via a static LIFF link pinned in the LINE group.
 
 ---
 
 ## Tech Stack
+
 ```
 Backend  : Python, Flask
 Database : SQLite
@@ -17,6 +23,7 @@ Hosting  : Self-hosted, HTTPS required
 ---
 
 ## LINE Channel Setup
+
 ```
 LINE Login channel
    ├── LIFF ID #1 (admin)    → https://yourhost.com/liff/admin
@@ -26,6 +33,7 @@ LINE Login channel
 ---
 
 ## Environment Variables
+
 ```
 LIFF_ID_ADMIN=              # LIFF ID for admin page
 LIFF_ID_REGISTER=           # LIFF ID for register page
@@ -36,6 +44,7 @@ BASE_URL=                   # e.g. https://yourhost.com
 ---
 
 ## Project Structure
+
 ```
 badminton-bot/
 │
@@ -60,6 +69,7 @@ badminton-bot/
 ---
 
 ## Database Schema
+
 ```sql
 CREATE TABLE sessions (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -89,6 +99,7 @@ CREATE TABLE attendees (
 ## API Endpoints (api.py)
 
 ### Sessions
+
 ```
 GET    /api/sessions                  # List all open sessions
 GET    /api/sessions?upcoming=true    # Filter to sessions with date >= today (recommended for register page)
@@ -100,6 +111,7 @@ PATCH  /api/sessions/<id>/toggle      # Toggle is_open (admin)
 ```
 
 ### Attendees
+
 ```
 GET    /api/sessions/<id>/attendees   # Get attendee list for session
 POST   /api/sessions/<id>/register    # Register attendance
@@ -107,6 +119,7 @@ DELETE /api/sessions/<id>/register    # Cancel registration
 ```
 
 ### Request/Response Format
+
 ```json
 // POST /api/sessions body
 {
@@ -143,6 +156,7 @@ DELETE /api/sessions/<id>/register    # Cancel registration
 ```
 
 ### Admin API Protection
+
 ```
 All admin API calls (POST/PUT/DELETE/PATCH on /api/sessions)
 must include header:
@@ -164,6 +178,7 @@ No bot or external step required.
 ## LIFF Pages
 
 ### Admin Page (/liff/admin)
+
 ```
 - Initialize LIFF SDK on load
 - Display list of ALL sessions (open and closed)
@@ -183,6 +198,7 @@ No bot or external step required.
 ```
 
 ### User Registration Page (/liff/register)
+
 ```
 - Initialize LIFF SDK on load
 - Fetch LINE user profile (userId, displayName) via LIFF SDK
@@ -204,6 +220,7 @@ No bot or external step required.
 ---
 
 ## Requirements.txt
+
 ```
 flask
 python-dotenv
@@ -213,6 +230,7 @@ requests
 ---
 
 ## Key Constraints
+
 ```
 - HTTPS is mandatory (LINE LIFF requirement)
 - LIFF SDK must be initialized before accessing LINE profile
@@ -226,6 +244,7 @@ requests
 ```
 
 ## Known Limitations
+
 ```
 - line_user_id trust gap: the server accepts line_user_id from the request
   body and cannot verify it belongs to the actual requester. A malicious

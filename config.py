@@ -10,3 +10,6 @@ LIFF_ID_REGISTER    = os.getenv('LIFF_ID_REGISTER', '')
 ADMIN_SECRET        = os.getenv('ADMIN_SECRET', 'toyonaka-admin').strip()  # .strip() guards against accidental whitespace
 BASE_URL            = os.getenv('BASE_URL', 'https://yourhost.com')
 DATABASE_PATH       = os.getenv('DATABASE_PATH', 'badminton.db')
+
+# Waiting list: hours a group must wait before they block skip-forward promotions
+WAITLIST_PRIORITY_HOURS = int(os.getenv('WAITLIST_PRIORITY_HOURS', '48'))

@@ -122,7 +122,7 @@
             </span>
           </div>
           <p>📍 ${escHtml(s.venue || '—')} &nbsp;|&nbsp; 📅 ${s.date} &nbsp;|&nbsp; ⏰ ${s.time_start}–${s.time_end}</p>
-          <p>👥 ${s.total_players} / ${s.max_players} players</p>
+          <p>👥 ${s.total_players} / ${s.max_players} confirmed${s.waiting_count > 0 ? ` &nbsp;|&nbsp; ⏳ ${s.waiting_count} waiting` : ''}</p>
           <div class="session-actions">
             <button onclick="toggleSession(${s.id})">${s.is_open ? 'Close' : 'Reopen'}</button>
             <button onclick="openModal(${s.id})">Edit</button>
@@ -156,13 +156,16 @@
         return;
       }
       const res = await fetch(`${API_BASE}/sessions/${id}/attendees`);
-      const attendees = await res.json();
-      listEl.innerHTML = attendees.length === 0
-        ? '<p>No attendees yet.</p>'
+      const data = await res.json();
+      const confirmed = data.confirmed || [];
+      const waiting   = data.waiting   || [];
+
+      const confirmedHtml = confirmed.length === 0
+        ? '<p>No confirmed attendees yet.</p>'
         : `<table>
              <thead><tr><th>Name</th><th>Count</th><th>Note</th></tr></thead>
              <tbody>
-               ${attendees.map(a => `
+               ${confirmed.map(a => `
                  <tr>
                    <td>${escHtml(a.display_name || a.line_user_id)}</td>
                    <td>${a.player_count}</td>
@@ -170,6 +173,25 @@
                  </tr>`).join('')}
              </tbody>
            </table>`;
+
+      const waitingHtml = waiting.length === 0
+        ? ''
+        : `<p class="waitlist-label">⏳ Waiting list</p>
+           <table>
+             <thead><tr><th>#</th><th>Name</th><th>Count</th><th>Note</th><th>Waiting since</th></tr></thead>
+             <tbody>
+               ${waiting.map((a, i) => `
+                 <tr>
+                   <td>${i + 1}</td>
+                   <td>${escHtml(a.display_name || a.line_user_id)}</td>
+                   <td>${a.player_count}</td>
+                   <td>${escHtml(a.note || '')}</td>
+                   <td>${a.registered_at ? a.registered_at.slice(0, 16).replace('T', ' ') : ''}</td>
+                 </tr>`).join('')}
+             </tbody>
+           </table>`;
+
+      listEl.innerHTML = confirmedHtml + waitingHtml;
       listEl.classList.remove('hidden');
       btn.textContent = '▼ Attendees';
     }
