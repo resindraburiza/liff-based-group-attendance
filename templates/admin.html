@@ -131,6 +131,8 @@
           <div class="attendees">
             <button class="btn-link" onclick="toggleAttendees(${s.id}, this)">▶ Attendees</button>
             <div class="attendee-list hidden" id="attendee-list-${s.id}"></div>
+            <button class="btn-link" onclick="toggleCancellations(${s.id}, this)" style="margin-top:4px">▶ Cancellations</button>
+            <div class="attendee-list hidden" id="cancel-list-${s.id}"></div>
           </div>
         </div>
       `).join('');
@@ -194,6 +196,47 @@
       listEl.innerHTML = confirmedHtml + waitingHtml;
       listEl.classList.remove('hidden');
       btn.textContent = '▼ Attendees';
+    }
+
+    // ── Cancellations (admin only) ─────────────────────────────────────────
+    async function toggleCancellations(id, btn) {
+      const listEl = document.getElementById(`cancel-list-${id}`);
+      if (!listEl.classList.contains('hidden')) {
+        listEl.classList.add('hidden');
+        btn.textContent = '▶ Cancellations';
+        return;
+      }
+      const res = await fetch(`${API_BASE}/sessions/${id}/cancellations`, {
+        headers: { 'X-Admin-Secret': adminSecret },
+      });
+      if (!res.ok) {
+        listEl.innerHTML = '<p class="error">Failed to load cancellations.</p>';
+        listEl.classList.remove('hidden');
+        btn.textContent = '▼ Cancellations';
+        return;
+      }
+      const rows = await res.json();
+      if (rows.length === 0) {
+        listEl.innerHTML = '<p>No cancellations yet.</p>';
+      } else {
+        listEl.innerHTML = `
+          <table>
+            <thead><tr><th>#</th><th>Name</th><th>Count</th><th>Note</th><th>Was</th><th>Cancelled at</th></tr></thead>
+            <tbody>
+              ${rows.map((r, i) => `
+                <tr>
+                  <td>${i + 1}</td>
+                  <td>${escHtml(r.display_name || r.line_user_id)}</td>
+                  <td>${r.player_count}</td>
+                  <td>${escHtml(r.note || '')}</td>
+                  <td>${r.was_status}</td>
+                  <td>${r.cancelled_at ? r.cancelled_at.slice(0, 16).replace('T', ' ') : ''}</td>
+                </tr>`).join('')}
+            </tbody>
+          </table>`;
+      }
+      listEl.classList.remove('hidden');
+      btn.textContent = '▼ Cancellations';
     }
 
     // ── Modal ──────────────────────────────────────────────────────────────

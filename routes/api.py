@@ -323,6 +323,19 @@ def list_attendees(session_id):
     })
 
 
+@api_bp.route('/sessions/<int:session_id>/cancellations', methods=['GET'])
+@require_admin
+def list_cancellations(session_id):
+    print('cancelation')
+    conn = get_db()
+    rows = conn.execute(
+        'SELECT * FROM cancellations WHERE session_id = ? ORDER BY cancelled_at ASC',
+        (session_id,),
+    ).fetchall()
+    conn.close()
+    return jsonify([dict(r) for r in rows])
+
+
 @api_bp.route('/sessions/<int:session_id>/register', methods=['POST'])
 def register(session_id):
     data = request.get_json()
@@ -332,12 +345,14 @@ def register(session_id):
         return jsonify({'error': 'line_user_id is required'}), 400
 
     conn = get_db()
+    conn.isolation_level = None  # manual transaction mode for this connection
+    conn.execute('BEGIN IMMEDIATE')  # blocks other writers for the duration
 
     session = conn.execute(
         'SELECT * FROM sessions WHERE id = ?', (session_id,)
     ).fetchone()
     if not session:
-        conn.close()
+        conn.close()  # uncommitted transaction auto-rolls back on close
         return jsonify({'error': 'Session not found'}), 404
     if not session['is_open']:
         conn.close()
@@ -359,6 +374,10 @@ def register(session_id):
 
     if confirmed_total + player_count > session['max_players']:
         # Not enough confirmed slots — add to waiting list
+        conn.execute(
+            'DELETE FROM cancellations WHERE session_id = ? AND line_user_id = ?',
+            (session_id, line_user_id),
+        )
         reg_time = now_jst()
         conn.execute('''
             INSERT INTO attendees (session_id, line_user_id, display_name, player_count, note, registered_at, status)
@@ -380,6 +399,10 @@ def register(session_id):
         conn.close()
         return jsonify({'message': 'Added to waiting list', 'status': 'waiting', 'position': position}), 201
 
+    conn.execute(
+        'DELETE FROM cancellations WHERE session_id = ? AND line_user_id = ?',
+        (session_id, line_user_id),
+    )
     conn.execute('''
         INSERT INTO attendees (session_id, line_user_id, display_name, player_count, note, registered_at, status)
         VALUES (?, ?, ?, ?, ?, ?, 'confirmed')
@@ -405,6 +428,8 @@ def cancel_registration(session_id):
         return jsonify({'error': 'line_user_id is required'}), 400
 
     conn = get_db()
+    conn.isolation_level = None  # manual transaction mode for this connection
+    conn.execute('BEGIN IMMEDIATE')  # blocks other writers for the duration
 
     # Check whether we're cancelling a confirmed or waiting registration
     existing = conn.execute(
@@ -412,10 +437,29 @@ def cancel_registration(session_id):
         (session_id, line_user_id),
     ).fetchone()
     if not existing:
-        conn.close()
+        conn.close()  # uncommitted transaction auto-rolls back on close
         return jsonify({'error': 'Registration not found'}), 404
 
     was_confirmed = existing['status'] == 'confirmed'
+
+    # Fetch full row before deleting so we can log it
+    full_row = conn.execute(
+        'SELECT * FROM attendees WHERE session_id = ? AND line_user_id = ?',
+        (session_id, line_user_id),
+    ).fetchone()
+
+    conn.execute('''
+        INSERT INTO cancellations (session_id, line_user_id, display_name, player_count, note, was_status, cancelled_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+    ''', (
+        session_id,
+        line_user_id,
+        full_row['display_name'],
+        full_row['player_count'],
+        full_row['note'],
+        full_row['status'],
+        now_jst(),
+    ))
 
     conn.execute(
         'DELETE FROM attendees WHERE session_id = ? AND line_user_id = ?',

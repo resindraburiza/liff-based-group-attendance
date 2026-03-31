@@ -37,9 +37,16 @@ def init_db():
             status          TEXT NOT NULL DEFAULT 'confirmed'
         );
 
-        -- Migration: add status column if it doesn't exist yet (idempotent)
-        -- SQLite doesn't support IF NOT EXISTS for ALTER TABLE, so we use a workaround
-        -- via the init_db migration block below.
+        CREATE TABLE IF NOT EXISTS cancellations (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id      INTEGER REFERENCES sessions(id),
+            line_user_id    TEXT NOT NULL,
+            display_name    TEXT,
+            player_count    INTEGER DEFAULT 1,
+            note            TEXT,
+            was_status      TEXT NOT NULL,  -- 'confirmed' or 'waiting'
+            cancelled_at    TEXT NOT NULL
+        );
     ''')
     conn.commit()
 
@@ -48,6 +55,21 @@ def init_db():
     if 'status' not in existing_columns:
         conn.execute("ALTER TABLE attendees ADD COLUMN status TEXT NOT NULL DEFAULT 'confirmed'")
         conn.commit()
+
+    # Migration: create cancellations table if it didn't exist before this feature
+    conn.execute('''
+        CREATE TABLE IF NOT EXISTS cancellations (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id      INTEGER REFERENCES sessions(id),
+            line_user_id    TEXT NOT NULL,
+            display_name    TEXT,
+            player_count    INTEGER DEFAULT 1,
+            note            TEXT,
+            was_status      TEXT NOT NULL,
+            cancelled_at    TEXT NOT NULL
+        )
+    ''')
+    conn.commit()
 
     conn.close()
 
