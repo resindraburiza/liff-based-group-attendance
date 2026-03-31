@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Badminton Registration 🏸</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}" />
+  <!-- Inline fallback: keep hidden elements invisible even if external CSS fails to load -->
+  <style>.hidden { display: none !important; }</style>
+  <script src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
+  <!-- API_BASE is rendered by Flask and automatically includes the Passenger sub-path prefix -->
+  <script>const API_BASE = "{{ url_for('api.list_sessions').replace('/sessions', '') }}";</script>
+</head>
+<body>
+  <div id="app">
+    <h1>🏸 Badminton Sessions</h1>
+    <p id="user-info">Loading profile…</p>
+    <div id="sessions-list"><p>Loading sessions…</p></div>
+  </div>
+
+  <!-- Registration modal -->
+  <div id="modal" class="modal hidden">
+    <div class="modal-content">
+      <h2>Register</h2>
+      <form id="register-form">
+        <input type="hidden" id="form-session-id" />
+        <label>Name
+          <input type="text" id="form-display-name" readonly />
+        </label>
+        <label>Players
+          <select id="form-player-count">
+            <option value="1">1 (just me)</option>
+            <option value="2">2</option>
+            <option value="3">3</option>
+            <option value="4">4</option>
+          </select>
+        </label>
+        <label>Note
+          <input type="text" id="form-note" placeholder="Optional (e.g. bringing my wife)" />
+        </label>
+        <div class="form-actions">
+          <button type="submit">Confirm</button>
+          <button type="button" id="btn-cancel-modal">Cancel</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <script>
+    const LIFF_ID = "{{ liff_id }}";
+    let lineUserId  = null;
+    let displayName = null;
+
+    // ── Bootstrap ──────────────────────────────────────────────────────────
+    liff.init({ liffId: LIFF_ID })
+      .then(async () => {
+        if (!liff.isLoggedIn()) {
+          liff.login();
+          return;
+        }
+        const profile = await liff.getProfile();
+        lineUserId  = profile.userId;
+        displayName = profile.displayName;
+        document.getElementById('user-info').textContent = `Hello, ${displayName}!`;
+        loadSessions();
+      })
+      .catch(err => {
+        document.getElementById('app').innerHTML =
+          '<p class="error">Failed to initialize LINE.<br>Please open this link inside the LINE app.</p>';
+        console.error(err);
+      });
+
+    // ── Load & render sessions ─────────────────────────────────────────────
+    async function loadSessions() {
+      const url = `${API_BASE}/sessions?open=true&upcoming=true&line_user_id=${encodeURIComponent(lineUserId)}`;
+      const res = await fetch(url);
+      const sessions = await res.json();
+      renderSessions(sessions);
+    }
+
+    function renderSessions(sessions) {
+      const container = document.getElementById('sessions-list');
+      if (sessions.length === 0) {
+        container.innerHTML = '<p>No upcoming sessions available.</p>';
+        return;
+      }
+      container.innerHTML = sessions.map(s => {
+        const isFull       = s.total_players >= s.max_players;
+        const isRegistered = s.my_registration != null;
+        return `
+          <div class="session-card open">
+            <div class="session-header">
+              <h2>${escHtml(s.title)}</h2>
+              <div>
+                ${isFull       ? '<span class="badge badge-full">Full</span>'           : ''}
+                ${isRegistered ? '<span class="badge badge-registered">Registered</span>' : ''}
+              </div>
+            </div>
+            <p>📍 ${escHtml(s.venue || '—')} &nbsp;|&nbsp; 📅 ${s.date} &nbsp;|&nbsp; ⏰ ${s.time_start}–${s.time_end}</p>
+            <p>👥 ${s.total_players} / ${s.max_players} players</p>
+            <div class="session-actions">
+              ${isRegistered
+                ? `<button class="btn-danger" onclick="cancelRegistration(${s.id})">Cancel Registration</button>`
+                : `<button onclick="openRegisterModal(${s.id})" ${isFull ? 'disabled' : ''}>Register</button>`
+              }
+            </div>
+            <div class="attendees">
+              <button class="btn-link" onclick="toggleAttendees(${s.id}, this)">▶ Show players</button>
+              <div class="attendee-list hidden" id="attendee-list-${s.id}"></div>
+            </div>
+          </div>
+        `;
+      }).join('');
+    }
+
+    // ── Registration modal ─────────────────────────────────────────────────
+    function openRegisterModal(sessionId) {
+      document.getElementById('form-session-id').value   = sessionId;
+      document.getElementById('form-display-name').value = displayName;
+      document.getElementById('form-player-count').value = '1';
+      document.getElementById('form-note').value         = '';
+      document.getElementById('modal').classList.remove('hidden');
+    }
+
+    document.getElementById('btn-cancel-modal').addEventListener('click', () => {
+      document.getElementById('modal').classList.add('hidden');
+    });
+
+    document.getElementById('register-form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const sessionId = document.getElementById('form-session-id').value;
+      const body = {
+        line_user_id: lineUserId,
+        display_name: displayName,
+        player_count: parseInt(document.getElementById('form-player-count').value),
+        note:         document.getElementById('form-note').value || null,
+      };
+      const res = await fetch(`${API_BASE}/sessions/${sessionId}/register`, {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify(body),
+      });
+      if (res.ok) {
+        document.getElementById('modal').classList.add('hidden');
+        loadSessions();
+      } else {
+        const err = await res.json();
+        alert(err.error || 'Registration failed.');
+      }
+    });
+
+    // ── Attendee list toggle ───────────────────────────────────────────────
+    async function toggleAttendees(id, btn) {
+      const listEl = document.getElementById(`attendee-list-${id}`);
+      if (!listEl.classList.contains('hidden')) {
+        listEl.classList.add('hidden');
+        btn.textContent = '▶ Show players';
+        return;
+      }
+      const res = await fetch(`${API_BASE}/sessions/${id}/attendees`);
+      const attendees = await res.json();
+      listEl.innerHTML = attendees.length === 0
+        ? '<p>No one registered yet.</p>'
+        : `<table>
+             <thead><tr><th>Name</th><th>Count</th></tr></thead>
+             <tbody>
+               ${attendees.map(a => `
+                 <tr>
+                   <td>${escHtml(a.display_name || '—')}</td>
+                   <td>${a.player_count}</td>
+                 </tr>`).join('')}
+             </tbody>
+           </table>`;
+      listEl.classList.remove('hidden');
+      btn.textContent = '▼ Hide players';
+    }
+
+    // ── Cancel registration ────────────────────────────────────────────────
+    async function cancelRegistration(sessionId) {
+      if (!confirm('Cancel your registration for this session?')) return;
+      const res = await fetch(`${API_BASE}/sessions/${sessionId}/register`, {
+        method:  'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ line_user_id: lineUserId }),
+      });
+      if (res.ok) {
+        loadSessions();
+      } else {
+        const err = await res.json();
+        alert(err.error || 'Failed to cancel registration.');
+      }
+    }
+
+    // ── Utility ────────────────────────────────────────────────────────────
+    function escHtml(str) {
+      return String(str)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+    }
+  </script>
+</body>
+</html>

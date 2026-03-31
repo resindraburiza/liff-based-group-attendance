@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Admin Panel 🏸</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}" />
+  <!-- Inline fallback: keep hidden elements invisible even if external CSS fails to load -->
+  <style>.hidden { display: none !important; }</style>
+  <script src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
+  <!-- API_BASE is rendered by Flask and automatically includes the Passenger sub-path prefix -->
+  <script>const API_BASE = "{{ url_for('api.admin_ping').replace('/admin/ping', '') }}";</script>
+</head>
+<body>
+  <!-- Password gate -->
+  <div id="password-gate">
+    <h1>🏸 Admin Panel</h1>
+    <p>Enter the admin password to continue.</p>
+    <form id="password-form">
+      <label>Password
+        <input type="password" id="input-password" autofocus />
+      </label>
+      <p id="password-error" class="error hidden"></p>
+      <button type="submit">Unlock</button>
+    </form>
+  </div>
+
+  <!-- Main app (hidden until unlocked) -->
+  <div id="app" class="hidden">
+    <h1>🏸 Admin Panel</h1>
+    <p id="status-msg"></p>
+    <button id="btn-new-session">+ New Session</button>
+    <div id="sessions-list"></div>
+  </div>
+
+  <!-- Create / Edit modal -->
+  <div id="modal" class="modal hidden">
+    <div class="modal-content">
+      <h2 id="modal-title">New Session</h2>
+      <form id="session-form">
+        <input type="hidden" id="form-session-id" />
+        <label>Title <input type="text" id="form-title" required /></label>
+        <label>Venue <input type="text" id="form-venue" /></label>
+        <label>Date <input type="date" id="form-date" required /></label>
+        <label>Time Start <input type="time" id="form-time-start" required /></label>
+        <label>Time End <input type="time" id="form-time-end" required /></label>
+        <label>Max Players <input type="number" id="form-max-players" value="20" min="1" /></label>
+        <div class="form-actions">
+          <button type="submit">Save</button>
+          <button type="button" id="btn-cancel-modal">Cancel</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <script>
+    const LIFF_ID = "{{ liff_id }}";
+    let adminSecret = null;
+    let sessionsData = {};   // id → session object, used for edit lookups
+
+    // ── Password gate ──────────────────────────────────────────────────────
+    document.getElementById('password-form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const password = document.getElementById('input-password').value.trim();
+      const errEl = document.getElementById('password-error');
+      errEl.classList.add('hidden');
+
+      const res = await fetch(`${API_BASE}/admin/ping`, {
+        headers: { 'X-Admin-Secret': password },
+      });
+
+      if (res.ok) {
+        adminSecret = password;
+        document.getElementById('password-gate').classList.add('hidden');
+        document.getElementById('app').classList.remove('hidden');
+        liff.init({ liffId: LIFF_ID })
+          .then(loadSessions)
+          .catch(err => setStatus('LIFF init failed: ' + err.message, true));
+      } else {
+        errEl.textContent = 'Wrong password. Try again.';
+        errEl.classList.remove('hidden');
+        document.getElementById('input-password').select();
+      }
+    });
+
+    // ── Helpers ────────────────────────────────────────────────────────────
+    function adminHeaders() {
+      return { 'Content-Type': 'application/json', 'X-Admin-Secret': adminSecret };
+    }
+
+    function setStatus(msg, isError = false) {
+      const el = document.getElementById('status-msg');
+      el.textContent = msg;
+      el.className = isError ? 'error' : '';
+    }
+
+    // ── Load & render sessions ─────────────────────────────────────────────
+    async function loadSessions() {
+      try {
+        const res = await fetch(`${API_BASE}/sessions`);
+        const sessions = await res.json();
+        sessionsData = {};
+        sessions.forEach(s => sessionsData[s.id] = s);
+        renderSessions(sessions);
+      } catch (e) {
+        setStatus('Failed to load sessions.', true);
+      }
+    }
+
+    function renderSessions(sessions) {
+      const container = document.getElementById('sessions-list');
+      if (sessions.length === 0) {
+        container.innerHTML = '<p>No sessions yet. Create one above.</p>';
+        return;
+      }
+      container.innerHTML = sessions.map(s => `
+        <div class="session-card ${s.is_open ? 'open' : 'closed'}">
+          <div class="session-header">
+            <h2>${escHtml(s.title)}</h2>
+            <span class="badge ${s.is_open ? 'badge-open' : 'badge-closed'}">
+              ${s.is_open ? 'Open' : 'Closed'}
+            </span>
+          </div>
+          <p>📍 ${escHtml(s.venue || '—')} &nbsp;|&nbsp; 📅 ${s.date} &nbsp;|&nbsp; ⏰ ${s.time_start}–${s.time_end}</p>
+          <p>👥 ${s.total_players} / ${s.max_players} players</p>
+          <div class="session-actions">
+            <button onclick="toggleSession(${s.id})">${s.is_open ? 'Close' : 'Reopen'}</button>
+            <button onclick="openModal(${s.id})">Edit</button>
+            <button class="btn-danger" onclick="deleteSession(${s.id})">Delete</button>
+          </div>
+          <div class="attendees">
+            <button class="btn-link" onclick="toggleAttendees(${s.id}, this)">▶ Attendees</button>
+            <div class="attendee-list hidden" id="attendee-list-${s.id}"></div>
+          </div>
+        </div>
+      `).join('');
+    }
+
+    // ── Session actions ────────────────────────────────────────────────────
+    async function toggleSession(id) {
+      await fetch(`${API_BASE}/sessions/${id}/toggle`, { method: 'PATCH', headers: adminHeaders() });
+      loadSessions();
+    }
+
+    async function deleteSession(id) {
+      if (!confirm('Delete this session and all its registrations?')) return;
+      await fetch(`${API_BASE}/sessions/${id}`, { method: 'DELETE', headers: adminHeaders() });
+      loadSessions();
+    }
+
+    async function toggleAttendees(id, btn) {
+      const listEl = document.getElementById(`attendee-list-${id}`);
+      if (!listEl.classList.contains('hidden')) {
+        listEl.classList.add('hidden');
+        btn.textContent = '▶ Attendees';
+        return;
+      }
+      const res = await fetch(`${API_BASE}/sessions/${id}/attendees`);
+      const attendees = await res.json();
+      listEl.innerHTML = attendees.length === 0
+        ? '<p>No attendees yet.</p>'
+        : `<table>
+             <thead><tr><th>Name</th><th>Count</th><th>Note</th></tr></thead>
+             <tbody>
+               ${attendees.map(a => `
+                 <tr>
+                   <td>${escHtml(a.display_name || a.line_user_id)}</td>
+                   <td>${a.player_count}</td>
+                   <td>${escHtml(a.note || '')}</td>
+                 </tr>`).join('')}
+             </tbody>
+           </table>`;
+      listEl.classList.remove('hidden');
+      btn.textContent = '▼ Attendees';
+    }
+
+    // ── Modal ──────────────────────────────────────────────────────────────
+    document.getElementById('btn-new-session').addEventListener('click', () => openModal(null));
+    document.getElementById('btn-cancel-modal').addEventListener('click', closeModal);
+
+    function openModal(sessionId) {
+      const s = sessionId ? sessionsData[sessionId] : null;
+      document.getElementById('modal-title').textContent = s ? 'Edit Session' : 'New Session';
+      document.getElementById('form-session-id').value  = s ? s.id          : '';
+      document.getElementById('form-title').value       = s ? s.title        : '';
+      document.getElementById('form-venue').value       = s ? (s.venue || '') : '';
+      document.getElementById('form-date').value        = s ? s.date         : '';
+      document.getElementById('form-time-start').value  = s ? s.time_start   : '';
+      document.getElementById('form-time-end').value    = s ? s.time_end     : '';
+      document.getElementById('form-max-players').value = s ? s.max_players  : 20;
+      document.getElementById('modal').classList.remove('hidden');
+    }
+
+    function closeModal() {
+      document.getElementById('modal').classList.add('hidden');
+    }
+
+    document.getElementById('session-form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const id = document.getElementById('form-session-id').value;
+      const body = {
+        title:       document.getElementById('form-title').value,
+        venue:       document.getElementById('form-venue').value,
+        date:        document.getElementById('form-date').value,
+        time_start:  document.getElementById('form-time-start').value,
+        time_end:    document.getElementById('form-time-end').value,
+        max_players: parseInt(document.getElementById('form-max-players').value),
+      };
+      const res = id
+        ? await fetch(`${API_BASE}/sessions/${id}`, { method: 'PUT',  headers: adminHeaders(), body: JSON.stringify(body) })
+        : await fetch(`${API_BASE}/sessions`,        { method: 'POST', headers: adminHeaders(), body: JSON.stringify(body) });
+
+      if (res.ok) {
+        closeModal();
+        loadSessions();
+      } else {
+        const err = await res.json();
+        setStatus(err.error || 'Save failed.', true);
+      }
+    });
+
+    // ── Utility ────────────────────────────────────────────────────────────
+    function escHtml(str) {
+      return String(str)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+    }
+  </script>
+</body>
+</html>
