@@ -5,14 +5,6 @@ from functools import wraps
 from database import get_db, now_jst, today_jst
 from config import ADMIN_SECRET, WAITLIST_PRIORITY_HOURS
 
-# stderr → Passenger captures this in the application error log
-# stdout (print) is NOT captured — always use logger or sys.stderr here
-# logging.basicConfig(
-#     stream=sys.stderr,
-#     level=logging.DEBUG,
-#     format='%(asctime)s [%(levelname)s] %(name)s: %(message)s',
-# )
-# logger = logging.getLogger('toyonaka.api')
 print(f'api blueprint loaded, ADMIN_SECRET repr={ADMIN_SECRET}')
 
 api_bp = Blueprint('api', __name__, url_prefix='/api')

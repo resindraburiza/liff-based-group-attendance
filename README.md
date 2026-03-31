@@ -58,7 +58,7 @@ pip install -r requirements.txt
 LIFF_ID_ADMIN=
 LIFF_ID_REGISTER=
 ADMIN_SECRET=<admin pass>
-BASE_URL=https://yourhost.com
+BASE_URL=https://yourhost.com # this one actually useless because we do not use webhook anymore and the URL is now infered by flask's url_for() 
 DATABASE_PATH=badminton.db
 WAITLIST_PRIORITY_HOURS=48
 ```
