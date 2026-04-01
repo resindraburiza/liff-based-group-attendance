@@ -13,6 +13,7 @@ api_bp = Blueprint('api', __name__, url_prefix='/api')
 # ─── Auth decorator ───────────────────────────────────────────────────────────
 
 def require_admin(f):
+    """Decorator that rejects requests missing a valid X-Admin-Secret header with a 401."""
     @wraps(f)
     def decorated(*args, **kwargs):
         secret = request.headers.get('X-Admin-Secret', '')
@@ -103,6 +104,7 @@ def list_sessions():
 
 @api_bp.route('/sessions/<int:session_id>', methods=['GET'])
 def get_session(session_id):
+    """Return a single session by ID, including its full attendee list."""
     conn = get_db()
     row = conn.execute('''
         SELECT s.*,
@@ -132,6 +134,7 @@ def get_session(session_id):
 @api_bp.route('/sessions', methods=['POST'])
 @require_admin
 def create_session():
+    """Create a new session from JSON body; requires admin auth. Returns the new session ID."""
     data = request.get_json()
     if not data or not data.get('title'):
         return jsonify({'error': 'title is required'}), 400
@@ -158,6 +161,7 @@ def create_session():
 @api_bp.route('/sessions/<int:session_id>', methods=['PUT'])
 @require_admin
 def update_session(session_id):
+    """Update an existing session's fields from JSON body; triggers a waitlist rebalance."""
     data = request.get_json()
     if not data:
         return jsonify({'error': 'No data provided'}), 400
@@ -185,6 +189,7 @@ def update_session(session_id):
 @api_bp.route('/sessions/<int:session_id>', methods=['DELETE'])
 @require_admin
 def delete_session(session_id):
+    """Delete a session and all its attendees permanently."""
     conn = get_db()
     conn.execute('DELETE FROM attendees WHERE session_id = ?', (session_id,))
     conn.execute('DELETE FROM sessions WHERE id = ?', (session_id,))
@@ -196,6 +201,7 @@ def delete_session(session_id):
 @api_bp.route('/sessions/<int:session_id>/toggle', methods=['PATCH'])
 @require_admin
 def toggle_session(session_id):
+    """Flip a session's is_open flag; triggers a waitlist rebalance when re-opened."""
     conn = get_db()
     conn.execute(
         'UPDATE sessions SET is_open = CASE WHEN is_open = 1 THEN 0 ELSE 1 END WHERE id = ?',
@@ -307,6 +313,7 @@ def _rebalance_session(session_id, conn):
 
 @api_bp.route('/sessions/<int:session_id>/attendees', methods=['GET'])
 def list_attendees(session_id):
+    """Return confirmed and waiting attendees for a session as two separate lists."""
     conn = get_db()
     confirmed = conn.execute(
         "SELECT * FROM attendees WHERE session_id = ? AND status = 'confirmed' ORDER BY registered_at ASC",
@@ -326,6 +333,7 @@ def list_attendees(session_id):
 @api_bp.route('/sessions/<int:session_id>/cancellations', methods=['GET'])
 @require_admin
 def list_cancellations(session_id):
+    """Return all cancellation records for a session, ordered by cancellation time."""
     print('cancelation')
     conn = get_db()
     rows = conn.execute(
@@ -338,6 +346,7 @@ def list_cancellations(session_id):
 
 @api_bp.route('/sessions/<int:session_id>/register', methods=['POST'])
 def register(session_id):
+    """Register a LINE user for a session, placing them on the waitlist if the session is full."""
     data = request.get_json()
     line_user_id = data.get('line_user_id') if data else None
 
@@ -421,6 +430,7 @@ def register(session_id):
 
 @api_bp.route('/sessions/<int:session_id>/register', methods=['DELETE'])
 def cancel_registration(session_id):
+    """Cancel a LINE user's registration and promote the next eligible waiter if a confirmed slot is freed."""
     data = request.get_json()
     line_user_id = data.get('line_user_id') if data else None
 
