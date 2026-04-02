@@ -323,10 +323,9 @@
       const end    = toGCalDt(s.date, s.time_end);
       const params = new URLSearchParams({
         action:   'TEMPLATE',
-        text:     s.title,
+        text:     'Toyonaka Badminton - ' + s.title,
         dates:    `${start}/${end}`,
         location: s.venue || '',
-        details:  `Badminton session. ${s.total_players}/${s.max_players} players confirmed.`,
       });
       return `https://calendar.google.com/calendar/render?${params.toString()}`;
     }

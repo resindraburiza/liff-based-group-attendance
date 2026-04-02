@@ -18,6 +18,29 @@
     <div id="sessions-list"><p>Loading sessions…</p></div>
   </div>
 
+  <!-- Notice modal -->
+  <div id="notice-modal" class="modal hidden" style="z-index:200">
+    <div class="modal-content" style="max-width:320px;text-align:center">
+      <h2>Notice</h2>
+      <p id="notice-message" style="margin:12px 0 4px"></p>
+      <div class="form-actions" style="justify-content:center">
+        <button type="button" id="btn-notice-ok">OK</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Confirm modal -->
+  <div id="confirm-modal" class="modal hidden" style="z-index:200">
+    <div class="modal-content" style="max-width:320px;text-align:center">
+      <h2>Confirm</h2>
+      <p id="confirm-message" style="margin:12px 0 4px"></p>
+      <div class="form-actions" style="justify-content:center">
+        <button type="button" id="btn-confirm-yes" class="btn-danger">Yes</button>
+        <button type="button" id="btn-confirm-no">No</button>
+      </div>
+    </div>
+  </div>
+
   <!-- Registration modal -->
   <div id="modal" class="modal hidden">
     <div class="modal-content">
@@ -47,8 +70,11 @@
 
   <script>
     const LIFF_ID = "{{ liff_id }}";
-    let lineUserId  = null;
-    let displayName = null;
+    let lineUserId      = null;
+    let displayName     = null;
+    let formMode        = 'register'; // 'register' | 'edit'
+    let sessionsData    = {};         // cache for edit modal lookup
+    let confirmCallback = null;
 
     // ── Bootstrap ──────────────────────────────────────────────────────────
     liff.init({ liffId: LIFF_ID })
@@ -78,6 +104,8 @@
     }
 
     function renderSessions(sessions) {
+      sessionsData = {};
+      sessions.forEach(s => { sessionsData[s.id] = s; });
       const container = document.getElementById('sessions-list');
       if (sessions.length === 0) {
         container.innerHTML = '<p>No upcoming sessions available.</p>';
@@ -98,17 +126,20 @@
                 ${isWaiting   ? `<span class="badge badge-waiting">Waitlist #${reg.waiting_position}</span>` : ''}
               </div>
             </div>
-            <p>📍 ${escHtml(s.venue || '—')} &nbsp;|&nbsp; 📅 ${s.date} &nbsp;|&nbsp; ⏰ ${s.time_start}–${s.time_end}</p>
+            <p>📍 ${escHtml(s.venue || '—')} &nbsp;|&nbsp; 📅 ${s.date} (${dayAbbr(s.date)}) &nbsp;|&nbsp; ⏰ ${s.time_start}–${s.time_end}</p>
             <p>👥 ${s.total_players} / ${s.max_players} confirmed${s.waiting_count > 0 ? ` &nbsp;|&nbsp; ⏳ ${s.waiting_count} waiting` : ''}</p>
             <div class="session-actions">
               ${isConfirmed
-                ? `<button class="btn-danger" onclick="cancelRegistration(${s.id})">Cancel Registration</button>`
+                ? `<button class="btn-secondary" onclick="openEditModal(${s.id})">Edit</button>
+                   <button class="btn-danger" onclick="cancelRegistration(${s.id})">Cancel Registration</button>`
                 : isWaiting
-                  ? `<button class="btn-danger" onclick="cancelRegistration(${s.id})">Leave Waiting List</button>`
+                  ? `<button class="btn-secondary" onclick="openEditModal(${s.id})">Edit</button>
+                     <button class="btn-danger" onclick="cancelRegistration(${s.id})">Leave Waiting List</button>`
                   : isFull
                     ? `<button class="btn-waiting" onclick="openRegisterModal(${s.id})">Join Waiting List</button>`
                     : `<button onclick="openRegisterModal(${s.id})">Register</button>`
               }
+              <button class="btn-cal" onclick="addToGCal(${s.id})">📅 Add to Calendar</button>
             </div>
             <div class="attendees">
               <button class="btn-link" onclick="toggleAttendees(${s.id}, this)">▶ Show players</button>
@@ -121,10 +152,24 @@
 
     // ── Registration modal ─────────────────────────────────────────────────
     function openRegisterModal(sessionId) {
+      formMode = 'register';
       document.getElementById('form-session-id').value   = sessionId;
       document.getElementById('form-display-name').value = displayName;
       document.getElementById('form-player-count').value = '1';
       document.getElementById('form-note').value         = '';
+      document.querySelector('#register-form button[type="submit"]').textContent = 'Confirm';
+      document.getElementById('modal').classList.remove('hidden');
+    }
+
+    function openEditModal(sessionId) {
+      const s   = sessionsData[sessionId];
+      const reg = s && s.my_registration;
+      formMode = 'edit';
+      document.getElementById('form-session-id').value   = sessionId;
+      document.getElementById('form-display-name').value = displayName;
+      document.getElementById('form-player-count').value = String(reg ? reg.player_count : 1);
+      document.getElementById('form-note').value         = (reg && reg.note) || '';
+      document.querySelector('#register-form button[type="submit"]').textContent = 'Update';
       document.getElementById('modal').classList.remove('hidden');
     }
 
@@ -132,17 +177,57 @@
       document.getElementById('modal').classList.add('hidden');
     });
 
+    // ── Notice / confirm helpers ───────────────────────────────────────────
+    function showNotice(msg) {
+      document.getElementById('notice-message').textContent = msg;
+      document.getElementById('notice-modal').classList.remove('hidden');
+    }
+
+    function showConfirm(msg, onYes) {
+      document.getElementById('confirm-message').textContent = msg;
+      confirmCallback = onYes;
+      document.getElementById('confirm-modal').classList.remove('hidden');
+    }
+
+    document.getElementById('btn-notice-ok').addEventListener('click', () => {
+      document.getElementById('notice-modal').classList.add('hidden');
+    });
+
+    document.getElementById('btn-confirm-yes').addEventListener('click', () => {
+      document.getElementById('confirm-modal').classList.add('hidden');
+      if (confirmCallback) confirmCallback();
+      confirmCallback = null;
+    });
+
+    document.getElementById('btn-confirm-no').addEventListener('click', () => {
+      document.getElementById('confirm-modal').classList.add('hidden');
+      confirmCallback = null;
+    });
+
     document.getElementById('register-form').addEventListener('submit', async (e) => {
       e.preventDefault();
-      const sessionId = document.getElementById('form-session-id').value;
+      const sessionId   = document.getElementById('form-session-id').value;
+      const playerCount = parseInt(document.getElementById('form-player-count').value);
+      const note        = document.getElementById('form-note').value.trim();
+
+      if (playerCount > 1 && !note) {
+        showNotice('Please fill in the Note field when registering more than 1 player.');
+        return;
+      }
+      if (note && playerCount <= 1) {
+        showNotice('Player count must be more than 1 when guest(s) info is filled.');
+        return;
+      }
+
       const body = {
         line_user_id: lineUserId,
         display_name: displayName,
-        player_count: parseInt(document.getElementById('form-player-count').value),
-        note:         document.getElementById('form-note').value || null,
+        player_count: playerCount,
+        note:         note || null,
       };
+      const method = formMode === 'edit' ? 'PUT' : 'POST';
       const res = await fetch(`${API_BASE}/sessions/${sessionId}/register`, {
-        method:  'POST',
+        method,
         headers: { 'Content-Type': 'application/json' },
         body:    JSON.stringify(body),
       });
@@ -151,7 +236,7 @@
         loadSessions();
       } else {
         const err = await res.json();
-        alert(err.error || 'Registration failed.');
+        showNotice(err.error || (formMode === 'edit' ? 'Update failed.' : 'Registration failed.'));
       }
     });
 
@@ -206,21 +291,52 @@
 
     // ── Cancel registration ────────────────────────────────────────────────
     async function cancelRegistration(sessionId) {
-      if (!confirm('Cancel your registration for this session?')) return;
-      const res = await fetch(`${API_BASE}/sessions/${sessionId}/register`, {
-        method:  'DELETE',
-        headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify({ line_user_id: lineUserId }),
+      showConfirm('Cancel your registration for this session?', async () => {
+        const res = await fetch(`${API_BASE}/sessions/${sessionId}/register`, {
+          method:  'DELETE',
+          headers: { 'Content-Type': 'application/json' },
+          body:    JSON.stringify({ line_user_id: lineUserId }),
+        });
+        if (res.ok) {
+          loadSessions();
+        } else {
+          const err = await res.json();
+          showNotice(err.error || 'Failed to cancel registration.');
+        }
       });
-      if (res.ok) {
-        loadSessions();
-      } else {
-        const err = await res.json();
-        alert(err.error || 'Failed to cancel registration.');
+    }
+
+    // ── Google Calendar export ──────────────────────────────────────────────
+    function addToGCal(sessionId) {
+      const s = sessionsData[sessionId];
+      if (!s) return;
+      const url = buildGCalUrl(s);
+      liff.openWindow({ url, external: true });
+    }
+
+    function buildGCalUrl(s) {
+      // Convert "2026-04-15" + "09:00" to "20260415T090000"
+      function toGCalDt(date, time) {
+        return date.replace(/-/g, '') + 'T' + time.replace(':', '') + '00';
       }
+      const start  = toGCalDt(s.date, s.time_start);
+      const end    = toGCalDt(s.date, s.time_end);
+      const params = new URLSearchParams({
+        action:   'TEMPLATE',
+        text:     'Toyonaka Badminton - ' + s.title,
+        dates:    `${start}/${end}`,
+        location: s.venue || '',
+      });
+      return `https://calendar.google.com/calendar/render?${params.toString()}`;
     }
 
     // ── Utility ────────────────────────────────────────────────────────────
+    const DAY_ABBR = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+    function dayAbbr(dateStr) {
+      // Append T00:00:00 to force local-date parsing (avoid UTC offset shifting the day)
+      return DAY_ABBR[new Date(dateStr + 'T00:00:00').getDay()];
+    }
+
     function escHtml(str) {
       return String(str)
         .replace(/&/g, '&amp;')

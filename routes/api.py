@@ -5,7 +5,7 @@ from functools import wraps
 from database import get_db, now_jst, today_jst
 from config import ADMIN_SECRET, WAITLIST_PRIORITY_HOURS
 
-print(f'api blueprint loaded, ADMIN_SECRET repr={ADMIN_SECRET}')
+# print(f'api blueprint loaded, ADMIN_SECRET repr={ADMIN_SECRET}')
 
 api_bp = Blueprint('api', __name__, url_prefix='/api')
 
@@ -426,6 +426,48 @@ def register(session_id):
     conn.commit()
     conn.close()
     return jsonify({'message': 'Registered successfully', 'status': 'confirmed'}), 201
+
+
+@api_bp.route('/sessions/<int:session_id>/register', methods=['PUT'])
+def update_registration(session_id):
+    """Update player_count and/or note for an existing registration; rebalances the session."""
+    data = request.get_json()
+    line_user_id = data.get('line_user_id') if data else None
+
+    if not line_user_id:
+        return jsonify({'error': 'line_user_id is required'}), 400
+
+    conn = get_db()
+    conn.isolation_level = None
+    conn.execute('BEGIN IMMEDIATE')
+
+    session = conn.execute('SELECT * FROM sessions WHERE id = ?', (session_id,)).fetchone()
+    if not session:
+        conn.close()
+        return jsonify({'error': 'Session not found'}), 404
+    if not session['is_open']:
+        conn.close()
+        return jsonify({'error': 'Session is closed'}), 400
+
+    existing = conn.execute(
+        'SELECT * FROM attendees WHERE session_id = ? AND line_user_id = ?',
+        (session_id, line_user_id),
+    ).fetchone()
+    if not existing:
+        conn.close()
+        return jsonify({'error': 'Registration not found'}), 404
+
+    player_count = data.get('player_count', existing['player_count'])
+    note = data.get('note', existing['note'])
+
+    conn.execute(
+        'UPDATE attendees SET player_count = ?, note = ? WHERE session_id = ? AND line_user_id = ?',
+        (player_count, note, session_id, line_user_id),
+    )
+    conn.commit()
+    _rebalance_session(session_id, conn)
+    conn.close()
+    return jsonify({'message': 'Registration updated'})
 
 
 @api_bp.route('/sessions/<int:session_id>/register', methods=['DELETE'])

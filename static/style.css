@@ -29,6 +29,12 @@ button {
 button:hover    { background: #009900; }
 button:disabled { background: #bbb; cursor: not-allowed; }
 
+.btn-secondary       { background: #546e7a; }
+.btn-secondary:hover { background: #37474f; }
+
+.btn-cal       { background: #1a73e8; }
+.btn-cal:hover { background: #1557b0; }
+
 .btn-danger       { background: #e53935; }
 .btn-danger:hover { background: #c62828; }
 
