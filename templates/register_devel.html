@@ -1,0 +1,350 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Badminton Registration 🏸</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}" />
+  <!-- Inline fallback: keep hidden elements invisible even if external CSS fails to load -->
+  <style>.hidden { display: none !important; }</style>
+  <script src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
+  <!-- API_BASE is rendered by Flask and automatically includes the Passenger sub-path prefix -->
+  <script>const API_BASE = "{{ url_for('api.list_sessions').replace('/sessions', '') }}";</script>
+</head>
+<body>
+  <div id="app">
+    <h1>🏸 Badminton Sessions</h1>
+    <p id="user-info">Loading profile…</p>
+    <div id="sessions-list"><p>Loading sessions…</p></div>
+  </div>
+
+  <!-- Notice modal -->
+  <div id="notice-modal" class="modal hidden" style="z-index:200">
+    <div class="modal-content" style="max-width:320px;text-align:center">
+      <h2>Notice</h2>
+      <p id="notice-message" style="margin:12px 0 4px"></p>
+      <div class="form-actions" style="justify-content:center">
+        <button type="button" id="btn-notice-ok">OK</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Confirm modal -->
+  <div id="confirm-modal" class="modal hidden" style="z-index:200">
+    <div class="modal-content" style="max-width:320px;text-align:center">
+      <h2>Confirm</h2>
+      <p id="confirm-message" style="margin:12px 0 4px"></p>
+      <div class="form-actions" style="justify-content:center">
+        <button type="button" id="btn-confirm-yes" class="btn-danger">Yes</button>
+        <button type="button" id="btn-confirm-no">No</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Registration modal -->
+  <div id="modal" class="modal hidden">
+    <div class="modal-content">
+      <h2>Register</h2>
+      <form id="register-form">
+        <input type="hidden" id="form-session-id" />
+        <label>Name
+          <input type="text" id="form-display-name" readonly />
+        </label>
+        <label>Players
+          <select id="form-player-count">
+            <option value="1">1 (just me)</option>
+            <option value="2">2 (+1)</option>
+            <option value="3">3 (+2, max)</option>
+          </select>
+        </label>
+        <label>Note
+          <input type="text" id="form-note" placeholder="(Name and level of guest(s) if any)" />
+        </label>
+        <div class="form-actions">
+          <button type="submit">Confirm</button>
+          <button type="button" id="btn-cancel-modal">Cancel</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <script>
+    const LIFF_ID = "{{ liff_id }}";
+    let lineUserId      = null;
+    let displayName     = null;
+    let formMode        = 'register'; // 'register' | 'edit'
+    let sessionsData    = {};         // cache for edit modal lookup
+    let confirmCallback = null;
+
+    // ── Bootstrap ──────────────────────────────────────────────────────────
+    liff.init({ liffId: LIFF_ID })
+      .then(async () => {
+        if (!liff.isLoggedIn()) {
+          liff.login();
+          return;
+        }
+        const profile = await liff.getProfile();
+        lineUserId  = profile.userId;
+        displayName = profile.displayName;
+        document.getElementById('user-info').textContent = `Hello, ${displayName}!`;
+        loadSessions();
+      })
+      .catch(err => {
+        document.getElementById('app').innerHTML =
+          '<p class="error">Failed to initialize LINE.<br>Please open this link inside the LINE app.</p>';
+        console.error(err);
+      });
+
+    // ── Load & render sessions ─────────────────────────────────────────────
+    async function loadSessions() {
+      const url = `${API_BASE}/sessions?open=true&upcoming=true&line_user_id=${encodeURIComponent(lineUserId)}`;
+      const res = await fetch(url);
+      const sessions = await res.json();
+      renderSessions(sessions);
+    }
+
+    function renderSessions(sessions) {
+      sessionsData = {};
+      sessions.forEach(s => { sessionsData[s.id] = s; });
+      const container = document.getElementById('sessions-list');
+      if (sessions.length === 0) {
+        container.innerHTML = '<p>No upcoming sessions available.</p>';
+        return;
+      }
+      container.innerHTML = sessions.map(s => {
+        const isFull       = s.total_players >= s.max_players;
+        const reg          = s.my_registration;
+        const isConfirmed  = reg && reg.status === 'confirmed';
+        const isWaiting    = reg && reg.status === 'waiting';
+        return `
+          <div class="session-card open">
+            <div class="session-header">
+              <h2>${escHtml(s.title)}</h2>
+              <div>
+                ${isFull      && !isConfirmed && !isWaiting ? '<span class="badge badge-full">Full</span>' : ''}
+                ${isConfirmed ? '<span class="badge badge-registered">Registered</span>' : ''}
+                ${isWaiting   ? `<span class="badge badge-waiting">Waitlist #${reg.waiting_position}</span>` : ''}
+              </div>
+            </div>
+            <p>📍 ${escHtml(s.venue || '—')} &nbsp;|&nbsp; 📅 ${s.date} (${dayAbbr(s.date)}) &nbsp;|&nbsp; ⏰ ${s.time_start}–${s.time_end}</p>
+            <p>👥 ${s.total_players} / ${s.max_players} confirmed${s.waiting_count > 0 ? ` &nbsp;|&nbsp; ⏳ ${s.waiting_count} waiting` : ''}</p>
+            <div class="session-actions">
+              ${isConfirmed
+                ? `<button class="btn-secondary" onclick="openEditModal(${s.id})">Edit</button>
+                   <button class="btn-danger" onclick="cancelRegistration(${s.id})">Cancel Registration</button>`
+                : isWaiting
+                  ? `<button class="btn-secondary" onclick="openEditModal(${s.id})">Edit</button>
+                     <button class="btn-danger" onclick="cancelRegistration(${s.id})">Leave Waiting List</button>`
+                  : isFull
+                    ? `<button class="btn-waiting" onclick="openRegisterModal(${s.id})">Join Waiting List</button>`
+                    : `<button onclick="openRegisterModal(${s.id})">Register</button>`
+              }
+              <button class="btn-cal" onclick="addToGCal(${s.id})">📅 Add to Calendar</button>
+            </div>
+            <div class="attendees">
+              <button class="btn-link" onclick="toggleAttendees(${s.id}, this)">▶ Show players</button>
+              <div class="attendee-list hidden" id="attendee-list-${s.id}"></div>
+            </div>
+          </div>
+        `;
+      }).join('');
+    }
+
+    // ── Registration modal ─────────────────────────────────────────────────
+    function openRegisterModal(sessionId) {
+      formMode = 'register';
+      document.getElementById('form-session-id').value   = sessionId;
+      document.getElementById('form-display-name').value = displayName;
+      document.getElementById('form-player-count').value = '1';
+      document.getElementById('form-note').value         = '';
+      document.querySelector('#register-form button[type="submit"]').textContent = 'Confirm';
+      document.getElementById('modal').classList.remove('hidden');
+    }
+
+    function openEditModal(sessionId) {
+      const s   = sessionsData[sessionId];
+      const reg = s && s.my_registration;
+      formMode = 'edit';
+      document.getElementById('form-session-id').value   = sessionId;
+      document.getElementById('form-display-name').value = displayName;
+      document.getElementById('form-player-count').value = String(reg ? reg.player_count : 1);
+      document.getElementById('form-note').value         = (reg && reg.note) || '';
+      document.querySelector('#register-form button[type="submit"]').textContent = 'Update';
+      document.getElementById('modal').classList.remove('hidden');
+    }
+
+    document.getElementById('btn-cancel-modal').addEventListener('click', () => {
+      document.getElementById('modal').classList.add('hidden');
+    });
+
+    // ── Notice / confirm helpers ───────────────────────────────────────────
+    function showNotice(msg) {
+      document.getElementById('notice-message').textContent = msg;
+      document.getElementById('notice-modal').classList.remove('hidden');
+    }
+
+    function showConfirm(msg, onYes) {
+      document.getElementById('confirm-message').textContent = msg;
+      confirmCallback = onYes;
+      document.getElementById('confirm-modal').classList.remove('hidden');
+    }
+
+    document.getElementById('btn-notice-ok').addEventListener('click', () => {
+      document.getElementById('notice-modal').classList.add('hidden');
+    });
+
+    document.getElementById('btn-confirm-yes').addEventListener('click', () => {
+      document.getElementById('confirm-modal').classList.add('hidden');
+      if (confirmCallback) confirmCallback();
+      confirmCallback = null;
+    });
+
+    document.getElementById('btn-confirm-no').addEventListener('click', () => {
+      document.getElementById('confirm-modal').classList.add('hidden');
+      confirmCallback = null;
+    });
+
+    document.getElementById('register-form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const sessionId   = document.getElementById('form-session-id').value;
+      const playerCount = parseInt(document.getElementById('form-player-count').value);
+      const note        = document.getElementById('form-note').value.trim();
+
+      if (playerCount > 1 && !note) {
+        showNotice('Please fill in the Note field when registering more than 1 player.');
+        return;
+      }
+      if (note && playerCount <= 1) {
+        showNotice('Player count must be more than 1 when guest(s) info is filled.');
+        return;
+      }
+
+      const body = {
+        line_user_id: lineUserId,
+        display_name: displayName,
+        player_count: playerCount,
+        note:         note || null,
+      };
+      const method = formMode === 'edit' ? 'PUT' : 'POST';
+      const res = await fetch(`${API_BASE}/sessions/${sessionId}/register`, {
+        method,
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify(body),
+      });
+      if (res.ok) {
+        document.getElementById('modal').classList.add('hidden');
+        loadSessions();
+      } else {
+        const err = await res.json();
+        showNotice(err.error || (formMode === 'edit' ? 'Update failed.' : 'Registration failed.'));
+      }
+    });
+
+    // ── Attendee list toggle ───────────────────────────────────────────────
+    async function toggleAttendees(id, btn) {
+      const listEl = document.getElementById(`attendee-list-${id}`);
+      if (!listEl.classList.contains('hidden')) {
+        listEl.classList.add('hidden');
+        btn.textContent = '▶ Show players';
+        return;
+      }
+      const res = await fetch(`${API_BASE}/sessions/${id}/attendees`);
+      const data = await res.json();
+      const confirmed = data.confirmed || [];
+      const waiting   = data.waiting   || [];
+
+      const confirmedHtml = confirmed.length === 0
+        ? '<p>No confirmed players yet.</p>'
+        : `<table>
+             <thead><tr><th>Name</th><th>Count</th><th>Note</th></tr></thead>
+             <tbody>
+               ${confirmed.map(a => `
+                 <tr>
+                   <td>${escHtml(a.display_name || a.line_user_id)}</td>
+                   <td>${a.player_count}</td>
+                   <td>${escHtml(a.note || '')}</td>
+                 </tr>`).join('')}
+             </tbody>
+           </table>`;
+
+      const waitingHtml = waiting.length === 0
+        ? ''
+        : `<p class="waitlist-label">⏳ Waiting list</p>
+           <table>
+             <thead><tr><th>#</th><th>Name</th><th>Count</th><th>Note</th><th>Waiting since</th></tr></thead>
+             <tbody>
+               ${waiting.map((a, i) => `
+                 <tr>
+                   <td>${i + 1}</td>
+                   <td>${escHtml(a.display_name || a.line_user_id)}</td>
+                   <td>${a.player_count}</td>
+                   <td>${escHtml(a.note || '')}</td>
+                   <td>${a.registered_at ? a.registered_at.slice(0, 16).replace('T', ' ') : ''}</td>
+                 </tr>`).join('')}
+             </tbody>
+           </table>`;
+
+      listEl.innerHTML = confirmedHtml + waitingHtml;
+      listEl.classList.remove('hidden');
+      btn.textContent = '▼ Hide players';
+    }
+
+    // ── Cancel registration ────────────────────────────────────────────────
+    async function cancelRegistration(sessionId) {
+      showConfirm('Cancel your registration for this session?', async () => {
+        const res = await fetch(`${API_BASE}/sessions/${sessionId}/register`, {
+          method:  'DELETE',
+          headers: { 'Content-Type': 'application/json' },
+          body:    JSON.stringify({ line_user_id: lineUserId }),
+        });
+        if (res.ok) {
+          loadSessions();
+        } else {
+          const err = await res.json();
+          showNotice(err.error || 'Failed to cancel registration.');
+        }
+      });
+    }
+
+    // ── Google Calendar export ──────────────────────────────────────────────
+    function addToGCal(sessionId) {
+      const s = sessionsData[sessionId];
+      if (!s) return;
+      const url = buildGCalUrl(s);
+      liff.openWindow({ url, external: true });
+    }
+
+    function buildGCalUrl(s) {
+      // Convert "2026-04-15" + "09:00" to "20260415T090000"
+      function toGCalDt(date, time) {
+        return date.replace(/-/g, '') + 'T' + time.replace(':', '') + '00';
+      }
+      const start  = toGCalDt(s.date, s.time_start);
+      const end    = toGCalDt(s.date, s.time_end);
+      const params = new URLSearchParams({
+        action:   'TEMPLATE',
+        text:     s.title,
+        dates:    `${start}/${end}`,
+        location: s.venue || '',
+        details:  `Badminton session. ${s.total_players}/${s.max_players} players confirmed.`,
+      });
+      return `https://calendar.google.com/calendar/render?${params.toString()}`;
+    }
+
+    // ── Utility ────────────────────────────────────────────────────────────
+    const DAY_ABBR = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+    function dayAbbr(dateStr) {
+      // Append T00:00:00 to force local-date parsing (avoid UTC offset shifting the day)
+      return DAY_ABBR[new Date(dateStr + 'T00:00:00').getDay()];
+    }
+
+    function escHtml(str) {
+      return String(str)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+    }
+  </script>
+</body>
+</html>
